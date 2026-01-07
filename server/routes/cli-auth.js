@@ -76,10 +76,27 @@ router.get('/codex/status', async (req, res) => {
 
 async function checkClaudeCredentials() {
   try {
-    const credPath = path.join(os.homedir(), '.claude', '.credentials.json');
+    let credPath = process.env.CLAUDE_CREDENTIALS_PATH;
+    if (credPath) {
+      if (credPath.startsWith('~/')) {
+        credPath = path.join(os.homedir(), credPath.slice(2));
+      }
+    } else {
+      credPath = path.join(os.homedir(), '.claude', '.credentials.json');
+    }
+    console.log('[CLI-AUTH] Checking credentials at:', credPath);
     const content = await fs.readFile(credPath, 'utf8');
     const creds = JSON.parse(content);
 
+    // Check for Environment Variables (User Config)
+    if (creds.env && (creds.env.ANTHROPIC_AUTH_TOKEN || creds.env.ANTHROPIC_API_KEY)) {
+      return {
+        authenticated: true,
+        email: 'Configured via settings.json'
+      };
+    }
+
+    // Check for Standard OAuth
     const oauth = creds.claudeAiOauth;
     if (oauth && oauth.accessToken) {
       const isExpired = oauth.expiresAt && Date.now() >= oauth.expiresAt;
@@ -97,9 +114,11 @@ async function checkClaudeCredentials() {
       email: null
     };
   } catch (error) {
+    console.error('[CLI-AUTH] Error checking credentials:', error);
     return {
       authenticated: false,
-      email: null
+      email: null,
+      error: error.message
     };
   }
 }
@@ -259,5 +278,52 @@ async function checkCodexCredentials() {
     };
   }
 }
+
+// Debug route for authentication diagnostics
+router.get('/debug-auth', async (req, res) => {
+  const diagnostics = {
+    env: {
+       CLAUDE_CREDENTIALS_PATH: process.env.CLAUDE_CREDENTIALS_PATH,
+       ANTHROPIC_API_KEY_SET: !!process.env.ANTHROPIC_API_KEY,
+       HOME: os.homedir()
+    },
+    resolution: {},
+    fileAccess: {},
+    fileContent: {}
+  };
+
+  try {
+    let credPath = process.env.CLAUDE_CREDENTIALS_PATH;
+    if (credPath) {
+       if (credPath.startsWith('~/')) {
+         credPath = path.join(os.homedir(), credPath.slice(2));
+       }
+       diagnostics.resolution.resolvedPath = credPath;
+       
+       try {
+         await fs.access(credPath);
+         diagnostics.fileAccess.exists = true;
+         
+         const content = await fs.readFile(credPath, 'utf8');
+         const json = JSON.parse(content);
+         diagnostics.fileContent.keys = Object.keys(json);
+         if (json.claudeAiOauth) {
+             diagnostics.fileContent.hasClaudeAiOauth = true;
+             diagnostics.fileContent.claudeAiOauthKeys = Object.keys(json.claudeAiOauth);
+         }
+         if (json.accessToken) diagnostics.fileContent.hasAccessToken = true;
+         
+       } catch (e) {
+         diagnostics.fileAccess.error = e.message;
+       }
+    } else {
+       diagnostics.resolution.error = "No CLAUDE_CREDENTIALS_PATH set";
+    }
+  } catch (e) {
+     diagnostics.error = e.message;
+  }
+
+  res.json(diagnostics);
+});
 
 export default router;

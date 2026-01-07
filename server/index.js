@@ -44,6 +44,51 @@ try {
     console.log('No .env file found or error reading it:', e.message);
 }
 
+// Auto-load credentials from custom path
+try {
+  if (process.env.CLAUDE_CREDENTIALS_PATH) {
+    const credPathResolved = process.env.CLAUDE_CREDENTIALS_PATH.startsWith('~/') 
+        ? path.join(os.homedir(), process.env.CLAUDE_CREDENTIALS_PATH.slice(2))
+        : process.env.CLAUDE_CREDENTIALS_PATH;
+
+    console.log('[AUTH] Loading custom credentials from:', credPathResolved);
+    if (fs.existsSync(credPathResolved)) {
+        const creds = JSON.parse(fs.readFileSync(credPathResolved, 'utf8'));
+        // Inject all environment variables found in credentials.env
+        if (creds.env) {
+            console.log('[AUTH] Found env section in credentials. Injecting variables...');
+            for (const [key, value] of Object.entries(creds.env)) {
+                process.env[key] = value;
+                console.log(`[AUTH] Injected process.env.${key}`);
+            }
+        }
+
+        // Fallback: Try to find token in standard locations if not already set
+        if (!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN) {
+            let token = null;
+            if (creds.claudeAiOauth && creds.claudeAiOauth.accessToken) {
+                token = creds.claudeAiOauth.accessToken;
+            } else if (creds.accessToken) {
+                token = creds.accessToken;
+            }
+            
+            if (token) {
+                console.log('[AUTH] Injecting ANTHROPIC_API_KEY from standard credentials fields');
+                process.env.ANTHROPIC_API_KEY = token;
+            }
+        } else {
+            console.log('[AUTH] No known token field found, and no API key in env. keys:', Object.keys(creds));
+            if (creds.claudeAiOauth) console.log('[AUTH] claudeAiOauth keys:', Object.keys(creds.claudeAiOauth));
+            if (creds.env) console.log('[AUTH] env keys:', Object.keys(creds.env));
+        }
+    } else {
+        console.error('[AUTH] Custom credential file not found:', credPathResolved);
+    }
+  }
+} catch (e) {
+  console.error('[AUTH] Error auto-loading credentials:', e);
+}
+
 console.log('PORT from env:', process.env.PORT);
 
 import express from 'express';
@@ -211,6 +256,60 @@ const wss = new WebSocketServer({
 
 // Make WebSocket server available to routes
 app.locals.wss = wss;
+
+app.get('/debug-auth-public', async (req, res) => {
+  const diagnostics = {
+    env: {
+       CLAUDE_CREDENTIALS_PATH: process.env.CLAUDE_CREDENTIALS_PATH,
+       ANTHROPIC_API_KEY_SET: !!process.env.ANTHROPIC_API_KEY,
+       ANTHROPIC_API_KEY_PREVIEW: process.env.ANTHROPIC_API_KEY ? (process.env.ANTHROPIC_API_KEY.slice(0, 10) + '...') : null,
+       HOME: os.homedir()
+    },
+    resolution: {},
+    fileAccess: {},
+    fileContent: {}
+  };
+
+  try {
+    let credPath = process.env.CLAUDE_CREDENTIALS_PATH;
+    if (credPath) {
+       if (credPath.startsWith('~/')) {
+         credPath = path.join(os.homedir(), credPath.slice(2));
+       }
+       diagnostics.resolution.resolvedPath = credPath;
+       
+       try {
+         await fsPromises.access(credPath);
+         diagnostics.fileAccess.exists = true;
+         
+         const content = await fsPromises.readFile(credPath, 'utf8');
+         const json = JSON.parse(content);
+         diagnostics.fileContent.keys = Object.keys(json);
+         if (json.claudeAiOauth) {
+             diagnostics.fileContent.hasClaudeAiOauth = true;
+             diagnostics.fileContent.claudeAiOauthKeys = Object.keys(json.claudeAiOauth);
+             if (json.claudeAiOauth.accessToken) diagnostics.fileContent.hasAccessTokenInOauth = true;
+         }
+         if (json.accessToken) diagnostics.fileContent.hasAccessToken = true;
+         if (json.sessionKey) diagnostics.fileContent.hasSessionKey = true;
+         if (json.env) {
+             diagnostics.fileContent.hasEnv = true;
+             diagnostics.fileContent.envKeys = Object.keys(json.env);
+             if (json.env.ANTHROPIC_API_KEY) diagnostics.fileContent.hasApiKeyInEnv = true;
+         }
+         
+       } catch (e) {
+         diagnostics.fileAccess.error = e.message;
+       }
+    } else {
+       diagnostics.resolution.error = "No CLAUDE_CREDENTIALS_PATH set";
+    }
+  } catch (e) {
+     diagnostics.error = e.message;
+  }
+
+  res.json(diagnostics);
+});
 
 app.use(cors());
 app.use(express.json({

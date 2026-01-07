@@ -7,12 +7,12 @@ const JWT_SECRET = process.env.JWT_SECRET || 'claude-ui-dev-secret-change-in-pro
 // Optional API key middleware
 const validateApiKey = (req, res, next) => {
   // Skip API key validation if not configured
-  if (!process.env.API_KEY) {
+  if (!process.env.APP_API_KEY) {
     return next();
   }
   
   const apiKey = req.headers['x-api-key'];
-  if (apiKey !== process.env.API_KEY) {
+  if (apiKey !== process.env.APP_API_KEY) {
     return res.status(401).json({ error: 'Invalid API key' });
   }
   next();
